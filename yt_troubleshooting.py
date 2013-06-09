@@ -1,0 +1,247 @@
+#!/usr/bin/python
+#
+# Do some testing and data collection for YT problems.
+# Follow standard troubleshooting guidelines for YT issues.
+#
+# For each test, provide v4 and v6 testing and collection.
+#
+import os
+import re
+import smtplib
+import socket
+import StringIO
+import subprocess
+import sys
+
+from datetime import datetime
+from email.mime.text import MIMEText
+from optparse import OptionParser
+
+_author_ = 'morrowc@ops-netman.net'
+
+
+def EmailResult(rcptto, content, mailfrom, mailhost):
+  """Email results to the colletor.
+
+  Args:
+    rcptto: a string, email destination.
+    content: a list, the content to send out to the collection point.
+    mailfrom: a string, the from address for the mail.
+    mailhost: a string, the destination to send mail through.
+  """
+  # Create a 'file' object type to Mime-ify.
+  string = StringIO.StringIO()
+  string.write('\n'.join(content))
+  string.seek(0)
+
+  # Mime-ify the message.
+  msg = MIMEText(string.read())
+  string.close()
+
+  msg['Subject'] = 'YT Diags (%s)' % datetime.strftime(datetime.utcnow(),
+                                                       '%Y/%m/%d %H:%M')
+  msg['From'] = mailfrom
+  msg['To'] = rcptto
+
+  # Attempt to send the message.
+  try:
+    s = smtplib.SMTP(mailhost)
+    s.sendmail(mailfrom, rcptto, msg.as_string())
+    s.quit()
+  except smtplib.SMTPConnectError as e:
+    print 'Failed to send mail, connect error: %s' % e
+    sys.exit(1)
+  except smtplib.SMTPDataError as e:
+    print 'Failed to send mail, data error: %s' % e
+    sys.exit(1)
+  except smtplib.SMTPException as e:
+    print 'Failed to send mail, Exception: %s' % e
+    sys.exit(1)
+  except smtplib.SMTPHeloError as e:
+    print 'Failed to send mail, Error in Helo: %s' % e
+    sys.exit(1)
+  except socket.error as e:
+    print 'Failed to connect to the smtp/mailhost: %s' % mailhost
+    print msg.as_string()
+    sys.exit(1)
+  
+
+def Where(binary):
+  """Where is the binary located? Find the first instance.
+
+  Args:
+    binary: a string, the name of the file to locate.
+
+  Returns:
+    a string, the path to the binary.
+  """
+  common_paths = ['/bin', '/usr/bin', '/usr/sbin/']
+  for path in common_paths:
+    if os.path.exists(os.path.join(path, binary)):
+      return os.path.join(path, binary)
+
+
+def Traceroute(dest, family='4'):
+  """Traceroute to a destination.
+
+  Args:
+    dest: a string, the ip address/hostname to traceroute toward.
+    family: a string, the address family to use in the tracroute.
+
+  Return:
+    a string, the traceroute results.
+  """
+  FAMILY = {'4': Where('traceroute'),
+            '6': Where('traceroute6')}
+
+  fd = subprocess.Popen('%s %s' % (FAMILY[family], dest), shell=True,
+                        stdout=subprocess.PIPE).stdout
+
+  return fd.read()
+
+
+def Resolver(name, family=socket.AF_INET):
+  """Resolve a hostname in the right family.
+
+  Args:
+    name: a string, to lookup.
+    family: a socket family.
+  Results:
+    a list of potential addresses for the name/family combination.
+  """
+  result = set([])
+  try:
+    for res in socket.getaddrinfo(name, 80, family):
+      result.add(res[4][0])
+
+  except socket.gaieror:
+    pass
+
+  return list(result)
+
+
+def Wget(url, family='4', output='-', quiet='-q', grep=''):
+  """Get a single URL, use wget cause it's simple.
+
+  Args:
+    url: a string, the URL to download.
+    family: a string, the address family to lookup with.
+    output: a string, where to send the wget output.
+    grep: a string, the potential grep-like command to trim results with.
+
+  Results:
+    a string, the resulting content from the webpage.
+  """
+  wget = Where('wget')
+  fd = subprocess.Popen('%s -%sO %s %s %s %s' %
+                        (wget, family, output, quiet, url, grep),
+                        shell=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE)
+  stdout, stderr = fd.communicate()
+  return stdout.strip()
+
+
+def main():
+  result = []
+  v4_redir = []
+  v6_redir = []
+  map_addr = None
+  mapping_re = re.compile(r'^.* => (\S+)\s*.*$')
+  opts = OptionParser()
+  opts.add_option('-e', '--email', default='morrowc.lists@gmail.com',
+      dest='email', help='Where should reports be sent?')
+
+  opts.add_option('-f', '--mailfrom', default='morrowc.lists@gmail.com',
+      dest='mailfrom', help='Where should reports originate?')
+
+  opts.add_option('-m', '--mailhost', default='mailserver.ops-netman.net',
+      dest='mailhost', help='Mailhost to bounce email reports through.')
+
+  (options, args) = opts.parse_args()
+
+  # Get current mappings, v4 first
+  v4_redir = Resolver('redirector.c.youtube.com')
+  print 'v4 redirector addresses: %s' % ', '.join(v4_redir)
+  result.append('v4 redirector.c.youtube.com: %s' % ', '.join(v4_redir))
+  print 'Asking for the v4 map location.'
+  v4_mapping = Wget('http://redirector.c.youtube.com/report_mapping', '4')
+  result.append('v4 mapping:\n%s' % v4_mapping)
+  m = mapping_re.match(v4_mapping)
+  if m:
+    map_addr = m.group(1)
+  else:
+    print 'No mapping address found for ipv4, stopping processing here.'
+    sys.exit(1)
+
+  print 'v4 Mapping address: %s' % map_addr
+  if '-' in map_addr:
+    result.append('Traceroute to GGC node:\n')
+    result.append(Traceroute('%s.ba.l.google.com' % map_addr))
+
+  print 'Tracerouting to all v4 redirector locations in turn.'
+  result.append('Traceroute results to v4_redirector destinations.')
+  for host in v4_redir:
+    result.append(Traceroute(host))
+
+  # v6 if available.
+  if socket.has_ipv6:
+    print 'Tested for v6 connectivity, doing v6 tests.'
+    v6_redir = Resolver('redirector.c.youtube.com', socket.AF_INET6)
+    print 'v6 redirector sites: %s' % ', '.join(v6_redir)
+    result.append('v6 redirector.c.youtube.com: %s' % ', '.join(v6_redir))
+    print 'Asking for v6 map location.'
+    v6_mapping = Wget('http://redirector.c.youtube.com/report_mapping', '6')
+    result.append('v6 mapping:\n%s' % v6_mapping)
+    m = mapping_re.match(v6_mapping)
+    if m:
+      map_addr = m.group(1)
+    else:
+      print 'No mapping address found for ipv6, stopping processing here.'
+      sys.exit(1)
+
+    print 'v6 Mapping address: %s' % map_addr
+    if '-' in map_addr:
+      result.append('Traceroutes to v6 GGC node.\n')
+      result.append(Traceroute(map_addr, '6'))
+
+    print 'Tracerouting to all v6 redir locations in turn.'
+    result.append('Traceroute results to v6_redirector destinations.')
+    for host in v6_redir:
+      result.append(Traceroute(host, '6'))
+
+  else:
+    result.append('NO IPv6 AVAILABLE, all v6 tests skipped.')
+  
+  # Get the hostname/mapping for video playback.
+  print 'Looking up v4 stream location.'
+  loc_v4 = Wget('"http://redirector.c.youtube.com/videoplayback?id=1&itag=2"',
+                 '4', '/dev/null', '', '2>&1 | grep Location | head -1')
+  m = re.search(r'^Location:\s+http://(.+\.youtube\.com)/vid.*$', loc_v4)
+  if m:
+    loc_v4 = m.group(1)
+
+  print 'v4 stream location: %s' % loc_v4.strip()
+  result.append('IPv4 streaming host: %s' % loc_v4)
+
+  # Traceroute and save that result as well.
+  print 'Traceroute to the v4 streamer.'
+  result.append(Traceroute(loc_v4))
+
+  if socket.has_ipv6:
+    loc_v6 = Wget('"http://redirector.c.youtube.com/videoplayback?id=1&itag=2"',
+                   '6', '/dev/null', '', '2>&1 | grep Location | head -1')
+    m = re.search(r'^Location:\s+http://(.+\.youtube\.com)/vid.*$', loc_v6)
+    if m:
+      loc_v6 = m.group(1)
+    result.append('IPv6 streaming host: %s' % loc_v6)
+    print 'v6 streamer location: %s' % loc_v6
+    print 'Tracerouting to the v6 streaming location.'
+    result.append(Traceroute(loc_v6, '6'))
+
+  print 'Emailing results now.'
+  EmailResult(options.email, result, options.mailfrom, options.mailhost)
+
+
+if __name__ == '__main__':
+  main()

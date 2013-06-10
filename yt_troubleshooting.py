@@ -18,6 +18,7 @@ from email.mime.text import MIMEText
 from optparse import OptionParser
 
 _author_ = 'morrowc@ops-netman.net'
+MAPPING_RE = re.compile(r'^.* => (\S+)\s*.*$')
 
 
 def EmailResult(rcptto, content, mailfrom, mailhost):
@@ -142,12 +143,82 @@ def Wget(url, family='4', output='-', quiet='-q', grep=''):
   return stdout.strip()
 
 
-def main():
+def V4Mappings():
+  """Lookup and store information about the v4 mapping location.
+
+  Return:
+    a list of strings, to be added ot the overall result data.
+  """
   result = []
   v4_redir = []
+  # Find the redirector location(s).
+  v4_redir = Resolver('redirector.c.youtube.com')
+  print 'v4 redirector addresses: %s' % ', '.join(v4_redir)
+  result.append('v4 redirector.c.youtube.com: %s' % ', '.join(v4_redir))
+  print 'Tracerouting to all v4 redirector locations in turn.'
+  result.append('Traceroute results to v4_redirector destinations.')
+  for host in v4_redir:
+    result.append(Traceroute(host))
+
+  # Find the mapping location returned from the redirector.
+  print 'Asking for the v4 map location.'
+  v4_mapping = Wget('http://redirector.c.youtube.com/report_mapping', '4')
+  result.append('v4 mapping:\n%s' % v4_mapping)
+  m = MAPPING_RE.match(v4_mapping)
+  if m:
+    map_addr = m.group(1)
+  else:
+    print 'No mapping address found for ipv4, stopping processing here.'
+    return result
+
+  print 'v4 Mapping address: %s' % map_addr
+  if '-' in map_addr:
+    result.append('Traceroute to GGC node:\n')
+    result.append(Traceroute('%s.ba.l.google.com' % map_addr))
+
+  return result
+
+
+def V6Mappings():
+  """Lookup and store information about the v6 mapping location.
+
+  Return:
+    a list of strings, to be added ot the overall result data.
+  """
+  result = []
+  v6_redir = []
+  # Find the redirector over v6.
+  v6_redir = Resolver('redirector.c.youtube.com', socket.AF_INET6)
+  print 'v6 redirector sites: %s' % ', '.join(v6_redir)
+  result.append('v6 redirector.c.youtube.com: %s' % ', '.join(v6_redir))
+  print 'Tracerouting to all v6 redir locations in turn.'
+  result.append('Traceroute results to v6_redirector destinations.')
+  for host in v6_redir:
+    result.append(Traceroute(host, '6'))
+
+  # Find the mapping location over v6, returned from the redirector..
+  print 'Asking for v6 map location.'
+  v6_mapping = Wget('http://redirector.c.youtube.com/report_mapping', '6')
+  result.append('v6 mapping:\n%s' % v6_mapping)
+  m = MAPPING_RE.match(v6_mapping)
+  if m:
+    map_addr = m.group(1)
+  else:
+    print 'No mapping address found for ipv6, stopping processing here.'
+    return result
+
+  print 'v6 Mapping address: %s' % map_addr
+  if '-' in map_addr:
+    result.append('Traceroutes to v6 GGC node.\n')
+    result.append(Traceroute(map_addr, '6'))
+
+  return result
+
+
+def main():
+  result = []
   v6_redir = []
   map_addr = None
-  mapping_re = re.compile(r'^.* => (\S+)\s*.*$')
   opts = OptionParser()
   opts.add_option('-e', '--email', default='morrowc.lists@gmail.com',
       dest='email', help='Where should reports be sent?')
@@ -161,55 +232,12 @@ def main():
   (options, args) = opts.parse_args()
 
   # Get current mappings, v4 first
-  v4_redir = Resolver('redirector.c.youtube.com')
-  print 'v4 redirector addresses: %s' % ', '.join(v4_redir)
-  result.append('v4 redirector.c.youtube.com: %s' % ', '.join(v4_redir))
-  print 'Asking for the v4 map location.'
-  v4_mapping = Wget('http://redirector.c.youtube.com/report_mapping', '4')
-  result.append('v4 mapping:\n%s' % v4_mapping)
-  m = mapping_re.match(v4_mapping)
-  if m:
-    map_addr = m.group(1)
-  else:
-    print 'No mapping address found for ipv4, stopping processing here.'
-    sys.exit(1)
-
-  print 'v4 Mapping address: %s' % map_addr
-  if '-' in map_addr:
-    result.append('Traceroute to GGC node:\n')
-    result.append(Traceroute('%s.ba.l.google.com' % map_addr))
-
-  print 'Tracerouting to all v4 redirector locations in turn.'
-  result.append('Traceroute results to v4_redirector destinations.')
-  for host in v4_redir:
-    result.append(Traceroute(host))
+  result.extend(V4Mappings())
 
   # v6 if available.
   if socket.has_ipv6:
     print 'Tested for v6 connectivity, doing v6 tests.'
-    v6_redir = Resolver('redirector.c.youtube.com', socket.AF_INET6)
-    print 'v6 redirector sites: %s' % ', '.join(v6_redir)
-    result.append('v6 redirector.c.youtube.com: %s' % ', '.join(v6_redir))
-    print 'Asking for v6 map location.'
-    v6_mapping = Wget('http://redirector.c.youtube.com/report_mapping', '6')
-    result.append('v6 mapping:\n%s' % v6_mapping)
-    m = mapping_re.match(v6_mapping)
-    if m:
-      map_addr = m.group(1)
-    else:
-      print 'No mapping address found for ipv6, stopping processing here.'
-      sys.exit(1)
-
-    print 'v6 Mapping address: %s' % map_addr
-    if '-' in map_addr:
-      result.append('Traceroutes to v6 GGC node.\n')
-      result.append(Traceroute(map_addr, '6'))
-
-    print 'Tracerouting to all v6 redir locations in turn.'
-    result.append('Traceroute results to v6_redirector destinations.')
-    for host in v6_redir:
-      result.append(Traceroute(host, '6'))
-
+    result.extend(V6Mappings())
   else:
     result.append('NO IPv6 AVAILABLE, all v6 tests skipped.')
   

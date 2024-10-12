@@ -62,10 +62,6 @@ If there are issues with sending emails, the script will print error messages an
 
 - **Email**: morrowc@ops-netman.net
 
-## License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
 
 ### Notes
 - Adjust any specifics (like the default email addresses or mail host) to match your preferences or use case.

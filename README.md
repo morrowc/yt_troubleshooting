@@ -66,4 +66,3 @@ If there are issues with sending emails, the script will print error messages an
 ### Notes
 - Adjust any specifics (like the default email addresses or mail host) to match your preferences or use case.
 - Ensure that your SMTP server settings are properly configured to allow sending emails from the script.
-- If you need additional sections (like troubleshooting common issues), let me know!
